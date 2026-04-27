@@ -32,6 +32,7 @@ type SummaryEntry = {
 	summary: string;
 	updatedAt: number;
 	entryCount: number;
+	source?: "ai" | "fallback";
 };
 
 type GitState = {
@@ -124,6 +125,16 @@ const cleanSummary = (text: string): string => {
 	return `${singleLine.slice(0, MAX_SESSION_NAME_CHARS - 1).trim()}…`;
 };
 
+const buildFallbackSummary = (entries: SessionEntry[]): string => {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+		const text = extractTextParts(entry.message.content).join(" ").trim();
+		if (text) return cleanSummary(text);
+	}
+	return "Active Pi session";
+};
+
 const countEntries = (entries: SessionEntry[]): number =>
 	entries.filter((entry) => entry.type === "message" && entry.message?.role).length;
 
@@ -137,6 +148,7 @@ const readLatestSummary = (entries: SessionEntry[]): SummaryEntry | undefined =>
 				summary: data.summary,
 				updatedAt: data.updatedAt,
 				entryCount: typeof data.entryCount === "number" ? data.entryCount : 0,
+				source: data.source === "fallback" ? "fallback" : "ai",
 			};
 		}
 	}
@@ -159,6 +171,7 @@ export default function (pi: ExtensionAPI) {
 	let summary = "No summary yet";
 	let summaryUpdatedAt = 0;
 	let summaryEntryCount = 0;
+	let summaryIsFallback = false;
 	let summarizing = false;
 	let git: GitState = { ...defaultGitState };
 	let gitTimer: NodeJS.Timeout | undefined;
@@ -166,6 +179,21 @@ export default function (pi: ExtensionAPI) {
 	let enabled = true;
 
 	const requestRender = () => renderFooter?.();
+
+	const applySummary = (nextSummary: string, entryCount: number, isFallback: boolean) => {
+		summary = nextSummary;
+		summaryUpdatedAt = Date.now();
+		summaryEntryCount = entryCount;
+		summaryIsFallback = isFallback;
+		pi.setSessionName(summary);
+		pi.appendEntry(CUSTOM_TYPE, {
+			summary,
+			updatedAt: summaryUpdatedAt,
+			entryCount: summaryEntryCount,
+			source: isFallback ? "fallback" : "ai",
+		});
+		requestRender();
+	};
 
 	const refreshGit = async (ctx: ExtensionContext) => {
 		try {
@@ -216,17 +244,24 @@ export default function (pi: ExtensionAPI) {
 		if (!conversationText.trim()) return;
 
 		const hasEnoughNewConversation = entryCount - summaryEntryCount >= SUMMARY_MIN_ENTRY_DELTA;
-		if (!force && summaryUpdatedAt > 0 && !hasEnoughNewConversation) return;
+		if (!force && !summaryIsFallback && summaryUpdatedAt > 0 && !hasEnoughNewConversation) return;
 
+		const fallbackSummary = buildFallbackSummary(branch);
 		const model = ctx.model;
-		if (!model) return;
+		if (!model) {
+			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
+			return;
+		}
 
-		summarizing = true;
-		requestRender();
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok || !auth.apiKey) return;
+			if (!auth.ok || !auth.apiKey) {
+				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
+				return;
+			}
 
+			summarizing = true;
+			requestRender();
 			const response = await complete(
 				model,
 				{
@@ -250,13 +285,14 @@ export default function (pi: ExtensionAPI) {
 					.map((part) => part.text)
 					.join("\n"),
 			);
-			if (!nextSummary) return;
+			if (!nextSummary) {
+				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
+				return;
+			}
 
-			summary = nextSummary;
-			summaryUpdatedAt = Date.now();
-			summaryEntryCount = entryCount;
-			pi.setSessionName(summary);
-			pi.appendEntry(CUSTOM_TYPE, { summary, updatedAt: summaryUpdatedAt, entryCount: summaryEntryCount });
+			applySummary(nextSummary, entryCount, false);
+		} catch {
+			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 		} finally {
 			summarizing = false;
 			requestRender();
@@ -313,6 +349,7 @@ export default function (pi: ExtensionAPI) {
 			summary = saved.summary;
 			summaryUpdatedAt = saved.updatedAt;
 			summaryEntryCount = saved.entryCount;
+			summaryIsFallback = saved.source === "fallback";
 			pi.setSessionName(summary);
 		} else if (pi.getSessionName()) {
 			summary = pi.getSessionName() ?? summary;
