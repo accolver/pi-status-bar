@@ -1,0 +1,40 @@
+{
+  "name": "pi-status-bar",
+  "version": "0.1.0",
+  "description": "Theme-aware Pi status bar extension with git state and AI-generated session titles.",
+  "license": "MIT",
+  "type": "module",
+  "author": "Alan Colver",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/accolver/pi-status-bar.git"
+  },
+  "bugs": {
+    "url": "https://github.com/accolver/pi-status-bar/issues"
+  },
+  "homepage": "https://github.com/accolver/pi-status-bar#readme",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "status-bar",
+    "session-summary",
+    "git",
+    "tui"
+  ],
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/status-bar.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}
