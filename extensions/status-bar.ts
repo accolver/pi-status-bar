@@ -279,7 +279,7 @@ export default function (pi: ExtensionAPI) {
 				invalidate() {},
 				render(width: number): string[] {
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
-					const leftRaw = `git: ${branch} • ${formatPending(git)}`;
+					const leftRaw = `⑂ ${branch} • ${formatPending(git)}`;
 					const summaryText = summarizing ? `summarizing… ${summary}` : summary;
 					const rightRaw = `AI: ${summaryText}`;
 
