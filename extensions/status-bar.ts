@@ -255,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok || !auth.apiKey) {
+			if (!auth.ok) {
 				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
