@@ -49,7 +49,7 @@ const SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
 const SUMMARY_MIN_ENTRY_DELTA = 2;
 const GIT_INTERVAL_MS = 15 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
-const MAX_SESSION_NAME_CHARS = 90;
+const MAX_SESSION_NAME_CHARS = 48;
 
 const defaultGitState: GitState = {
 	branch: null,
@@ -110,10 +110,11 @@ const buildConversationText = (entries: SessionEntry[]): string => {
 
 const buildSummaryPrompt = (conversationText: string): string =>
 	[
-		"Create a concise Pi session resume title for this conversation.",
+		"Create an extremely short Pi session title for this conversation.",
 		"Return one brief statement only, no markdown, no bullets.",
-		"It must capture the current objective, important progress, and next action if obvious.",
-		`Keep it under ${MAX_SESSION_NAME_CHARS} characters if possible.`,
+		"Capture only the main topic and completed/current work.",
+		"Omit next steps, recommendations, and secondary details.",
+		"Prefer 3-6 words. Hard limit: 48 characters.",
 		"",
 		"<conversation>",
 		conversationText,
@@ -124,16 +125,6 @@ const cleanSummary = (text: string): string => {
 	const singleLine = text.replace(/\s+/g, " ").trim().replace(/^['\"]|['\"]$/g, "");
 	if (singleLine.length <= MAX_SESSION_NAME_CHARS) return singleLine;
 	return `${singleLine.slice(0, MAX_SESSION_NAME_CHARS - 1).trim()}…`;
-};
-
-const buildFallbackSummary = (entries: SessionEntry[]): string => {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-		if (entry?.type !== "message" || entry.message?.role !== "user") continue;
-		const text = extractTextParts(entry.message.content).join(" ").trim();
-		if (text) return cleanSummary(text);
-	}
-	return "Active Pi session";
 };
 
 const countEntries = (entries: SessionEntry[]): number =>
@@ -171,7 +162,7 @@ const formatCount = (n: number): string => (n < 1000 ? `${n}` : `${(n / 1000).to
 
 export default function (pi: ExtensionAPI) {
 	let renderFooter: (() => void) | undefined;
-	let summary = "No summary yet";
+	let summary = "";
 	let summaryUpdatedAt = 0;
 	let summaryEntryCount = 0;
 	let summaryIsFallback = false;
@@ -251,11 +242,9 @@ export default function (pi: ExtensionAPI) {
 		const hasEnoughNewConversation = entryCount - summaryEntryCount >= SUMMARY_MIN_ENTRY_DELTA;
 		if (!force && !summaryIsFallback && summaryUpdatedAt > 0 && !hasEnoughNewConversation) return;
 
-		const fallbackSummary = buildFallbackSummary(branch);
 		const model = ctx.model;
 		if (!model) {
 			lastSummaryError = "No model selected";
-			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 			return;
 		}
 
@@ -263,7 +252,6 @@ export default function (pi: ExtensionAPI) {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
 				lastSummaryError = auth.error;
-				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
 
@@ -290,7 +278,6 @@ export default function (pi: ExtensionAPI) {
 
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				lastSummaryError = response.errorMessage ?? `Model stopped: ${response.stopReason}`;
-				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
 
@@ -302,14 +289,12 @@ export default function (pi: ExtensionAPI) {
 			);
 			if (!nextSummary) {
 				lastSummaryError = "Model returned no text";
-				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
 
 			applySummary(nextSummary, entryCount, false);
 		} catch (error) {
 			lastSummaryError = error instanceof Error ? error.message : String(error);
-			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 		} finally {
 			summarizing = false;
 			requestRender();
@@ -346,17 +331,16 @@ export default function (pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
 					const leftRaw = `⑂ ${branch} ${formatPending(git)}`;
-					const summaryText = summarizing ? `summarizing… ${summary}` : summary;
-					const centerRaw = `AI: ${summaryText}`;
+					const centerRaw = summary.trim();
 					const rightRaw = getUsageText(ctx);
 
 					const left = theme.fg(git.pending && git.pending > 0 ? "warning" : "success", leftRaw);
 					const right = theme.fg("dim", truncateToWidth(rightRaw, Math.min(32, Math.max(12, Math.floor(width * 0.3))), "…"));
-					const centerColor = summarizing ? "accent" : summaryIsFallback ? "warning" : "dim";
+					const centerColor = summaryIsFallback ? "warning" : "dim";
 					const reserved = visibleWidth(left) + visibleWidth(right) + 2;
-					const center = theme.fg(centerColor, truncateToWidth(centerRaw, Math.max(0, width - reserved), "…"));
+					const center = centerRaw ? theme.fg(centerColor, truncateToWidth(centerRaw, Math.max(0, width - reserved), "…")) : "";
 					const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(center) - visibleWidth(right)));
-					return [truncateToWidth(left + " " + center + gap + right, width, "")];
+					return [truncateToWidth(left + (center ? " " + center : "") + gap + right, width, "")];
 				},
 			};
 		});
@@ -376,14 +360,17 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const saved = readLatestSummary(ctx.sessionManager.getEntries() as SessionEntry[]);
-		if (saved) {
-			summary = saved.summary;
-			summaryUpdatedAt = saved.updatedAt;
+		if (saved?.source !== "fallback") {
+			summary = saved?.summary ?? pi.getSessionName() ?? summary;
+			summaryUpdatedAt = saved?.updatedAt ?? 0;
+			summaryEntryCount = saved?.entryCount ?? 0;
+			summaryIsFallback = false;
+			if (summary) pi.setSessionName(summary);
+		} else {
+			summary = "";
+			summaryUpdatedAt = 0;
 			summaryEntryCount = saved.entryCount;
-			summaryIsFallback = saved.source === "fallback";
-			pi.setSessionName(summary);
-		} else if (pi.getSessionName()) {
-			summary = pi.getSessionName() ?? summary;
+			summaryIsFallback = false;
 		}
 
 		if (!ctx.hasUI) return;
