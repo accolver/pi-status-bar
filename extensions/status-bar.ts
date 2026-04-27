@@ -311,7 +311,9 @@ export default function (pi: ExtensionAPI) {
 			output += message.usage?.output ?? 0;
 		}
 		const model = ctx.model?.id ?? "no-model";
-		return `${model} ↑${formatCount(input)} ↓${formatCount(output)}`;
+		const usage = ctx.getContextUsage();
+		const contextPercent = usage?.percent === null || usage?.percent === undefined ? "" : ` ${Math.round(usage.percent)}%`;
+		return `${model}${contextPercent} ↑${formatCount(input)} ↓${formatCount(output)}`;
 	};
 
 	const installFooter = (ctx: ExtensionContext) => {
