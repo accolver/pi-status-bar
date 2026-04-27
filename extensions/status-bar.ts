@@ -8,7 +8,8 @@
  * resume title for the current session.
  */
 
-import { complete } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
@@ -156,15 +157,17 @@ const readLatestSummary = (entries: SessionEntry[]): SummaryEntry | undefined =>
 };
 
 const formatPending = (git: GitState): string => {
-	if (git.pending === null) return "changes ?";
-	if (git.pending === 0) return "clean";
+	if (git.pending === null) return "?";
+	if (git.pending === 0) return "✓";
 
-	const parts: string[] = [];
-	if (git.staged) parts.push(`${git.staged} staged`);
-	if (git.unstaged) parts.push(`${git.unstaged} unstaged`);
-	if (git.untracked) parts.push(`${git.untracked} new`);
-	return parts.length > 0 ? parts.join(", ") : `${git.pending} changes`;
+	const parts: string[] = [`±${git.pending}`];
+	if (git.staged) parts.push(`s${git.staged}`);
+	if (git.unstaged) parts.push(`u${git.unstaged}`);
+	if (git.untracked) parts.push(`n${git.untracked}`);
+	return parts.join(" ");
 };
+
+const formatCount = (n: number): string => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
 
 export default function (pi: ExtensionAPI) {
 	let renderFooter: (() => void) | undefined;
@@ -173,6 +176,7 @@ export default function (pi: ExtensionAPI) {
 	let summaryEntryCount = 0;
 	let summaryIsFallback = false;
 	let summarizing = false;
+	let lastSummaryError: string | undefined;
 	let git: GitState = { ...defaultGitState };
 	let gitTimer: NodeJS.Timeout | undefined;
 	let summaryTimer: NodeJS.Timeout | undefined;
@@ -185,6 +189,7 @@ export default function (pi: ExtensionAPI) {
 		summaryUpdatedAt = Date.now();
 		summaryEntryCount = entryCount;
 		summaryIsFallback = isFallback;
+		if (!isFallback) lastSummaryError = undefined;
 		pi.setSessionName(summary);
 		pi.appendEntry(CUSTOM_TYPE, {
 			summary,
@@ -249,6 +254,7 @@ export default function (pi: ExtensionAPI) {
 		const fallbackSummary = buildFallbackSummary(branch);
 		const model = ctx.model;
 		if (!model) {
+			lastSummaryError = "No model selected";
 			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 			return;
 		}
@@ -256,15 +262,17 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
+				lastSummaryError = auth.error;
 				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
 
 			summarizing = true;
 			requestRender();
-			const response = await complete(
+			const response = await completeSimple(
 				model,
 				{
+					systemPrompt: "You write concise session titles for a coding-agent terminal UI.",
 					messages: [
 						{
 							role: "user" as const,
@@ -276,8 +284,15 @@ export default function (pi: ExtensionAPI) {
 				{
 					apiKey: auth.apiKey,
 					headers: auth.headers,
+					signal: ctx.signal,
 				},
 			);
+
+			if (response.stopReason === "error" || response.stopReason === "aborted") {
+				lastSummaryError = response.errorMessage ?? `Model stopped: ${response.stopReason}`;
+				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
+				return;
+			}
 
 			const nextSummary = cleanSummary(
 				response.content
@@ -286,17 +301,32 @@ export default function (pi: ExtensionAPI) {
 					.join("\n"),
 			);
 			if (!nextSummary) {
+				lastSummaryError = "Model returned no text";
 				if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 				return;
 			}
 
 			applySummary(nextSummary, entryCount, false);
-		} catch {
+		} catch (error) {
+			lastSummaryError = error instanceof Error ? error.message : String(error);
 			if (summaryUpdatedAt === 0) applySummary(fallbackSummary, entryCount, true);
 		} finally {
 			summarizing = false;
 			requestRender();
 		}
+	};
+
+	const getUsageText = (ctx: ExtensionContext): string => {
+		let input = 0;
+		let output = 0;
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const message = entry.message as AssistantMessage;
+			input += message.usage?.input ?? 0;
+			output += message.usage?.output ?? 0;
+		}
+		const model = ctx.model?.id ?? "no-model";
+		return `${model} ↑${formatCount(input)} ↓${formatCount(output)}`;
 	};
 
 	const installFooter = (ctx: ExtensionContext) => {
@@ -315,17 +345,18 @@ export default function (pi: ExtensionAPI) {
 				invalidate() {},
 				render(width: number): string[] {
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
-					const leftRaw = `⑂ ${branch} • ${formatPending(git)}`;
+					const leftRaw = `⑂ ${branch} ${formatPending(git)}`;
 					const summaryText = summarizing ? `summarizing… ${summary}` : summary;
-					const rightRaw = `AI: ${summaryText}`;
+					const centerRaw = `AI: ${summaryText}`;
+					const rightRaw = getUsageText(ctx);
 
 					const left = theme.fg(git.pending && git.pending > 0 ? "warning" : "success", leftRaw);
-					const right = theme.fg(summarizing ? "accent" : "dim", rightRaw);
-					const minGap = "  ";
-					const availableRightWidth = Math.max(0, width - visibleWidth(leftRaw) - visibleWidth(minGap));
-					const clippedRight = truncateToWidth(right, availableRightWidth, "…");
-					const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(clippedRight)));
-					return [truncateToWidth(left + gap + clippedRight, width, "")];
+					const right = theme.fg("dim", truncateToWidth(rightRaw, Math.min(32, Math.max(12, Math.floor(width * 0.3))), "…"));
+					const centerColor = summarizing ? "accent" : summaryIsFallback ? "warning" : "dim";
+					const reserved = visibleWidth(left) + visibleWidth(right) + 2;
+					const center = theme.fg(centerColor, truncateToWidth(centerRaw, Math.max(0, width - reserved), "…"));
+					const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(center) - visibleWidth(right)));
+					return [truncateToWidth(left + " " + center + gap + right, width, "")];
 				},
 			};
 		});
@@ -379,7 +410,25 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await refreshGit(ctx);
 			await refreshSummary(ctx, true);
-			ctx.ui.notify("Session bar refreshed", "info");
+			ctx.ui.notify(lastSummaryError ? `Session bar refreshed; AI summary failed: ${lastSummaryError}` : "Session bar refreshed", lastSummaryError ? "warning" : "info");
+		},
+	});
+
+	pi.registerCommand("session-bar-debug", {
+		description: "Show status bar summary diagnostics",
+		handler: async (_args, ctx) => {
+			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+			const auth = ctx.model ? await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model) : undefined;
+			ctx.ui.notify(
+				[
+					`model=${model}`,
+					`summarySource=${summaryIsFallback ? "fallback" : "ai"}`,
+					`summaryEntries=${summaryEntryCount}`,
+					`auth=${auth ? (auth.ok ? "ok" : auth.error) : "none"}`,
+					`lastError=${lastSummaryError ?? "none"}`,
+				].join(" • "),
+				lastSummaryError ? "warning" : "info",
+			);
 		},
 	});
 
