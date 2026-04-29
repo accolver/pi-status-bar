@@ -5,7 +5,7 @@ A small [Pi](https://pi.dev) extension that replaces the default TUI footer with
 ## Features
 
 - Sticky footer for Pi's interactive TUI.
-- Current working folder, git branch, and pending change counts.
+- Current working folder, git branch, git worktree marker, and pending change counts.
 - AI-generated session title, refreshed as the conversation evolves.
 - Resume-friendly session names via `pi.setSessionName(...)`.
 - Theme-aware colors using Pi theme tokens.

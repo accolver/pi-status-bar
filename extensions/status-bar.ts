@@ -39,6 +39,7 @@ type SummaryEntry = {
 
 type GitState = {
 	branch: string | null;
+	isWorktree: boolean;
 	pending: number | null;
 	staged: number | null;
 	unstaged: number | null;
@@ -55,6 +56,7 @@ const MAX_CWD_NAME_WIDTH = 24;
 
 const defaultGitState: GitState = {
 	branch: null,
+	isWorktree: false,
 	pending: null,
 	staged: null,
 	unstaged: null,
@@ -167,6 +169,15 @@ const formatCwdName = (cwd: string): string => {
 	return truncateToWidth(name, MAX_CWD_NAME_WIDTH, "…");
 };
 
+const parseWorktreeState = (stdout: string): boolean => {
+	const [insideWorkTree, gitDir, gitCommonDir] = stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+
+	return insideWorkTree === "true" && Boolean(gitDir) && Boolean(gitCommonDir) && gitDir !== gitCommonDir;
+};
+
 export default function (pi: ExtensionAPI) {
 	let renderFooter: (() => void) | undefined;
 	let summary = "";
@@ -202,6 +213,10 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const branchResult = await pi.exec("git", ["branch", "--show-current"], { cwd: ctx.cwd, timeout: 2000 });
 			const statusResult = await pi.exec("git", ["status", "--porcelain=v1"], { cwd: ctx.cwd, timeout: 3000 });
+			const worktreeResult = await pi.exec("git", ["rev-parse", "--is-inside-work-tree", "--git-dir", "--git-common-dir"], {
+				cwd: ctx.cwd,
+				timeout: 2000,
+			});
 
 			if (branchResult.code !== 0 || statusResult.code !== 0) {
 				git = { ...defaultGitState };
@@ -226,6 +241,7 @@ export default function (pi: ExtensionAPI) {
 
 			git = {
 				branch: branchResult.stdout.trim() || null,
+				isWorktree: worktreeResult.code === 0 ? parseWorktreeState(worktreeResult.stdout) : false,
 				pending: lines.length,
 				staged,
 				unstaged,
@@ -340,7 +356,8 @@ export default function (pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const cwdName = formatCwdName(ctx.cwd);
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
-					const leftRaw = `${cwdName} ⑂ ${branch} ${formatPending(git)}`;
+					const worktreeMarker = git.isWorktree ? " worktree" : "";
+					const leftRaw = `${cwdName} ⑂ ${branch}${worktreeMarker} ${formatPending(git)}`;
 					const centerRaw = summary.trim();
 					const rightRaw = getUsageText(ctx);
 
