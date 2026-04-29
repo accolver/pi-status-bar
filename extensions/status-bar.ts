@@ -8,6 +8,7 @@
  * resume title for the current session.
  */
 
+import { basename, parse } from "node:path";
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -50,6 +51,7 @@ const SUMMARY_MIN_ENTRY_DELTA = 2;
 const GIT_INTERVAL_MS = 15 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
 const MAX_SESSION_NAME_CHARS = 48;
+const MAX_CWD_NAME_WIDTH = 24;
 
 const defaultGitState: GitState = {
 	branch: null,
@@ -159,6 +161,11 @@ const formatPending = (git: GitState): string => {
 };
 
 const formatCount = (n: number): string => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
+
+const formatCwdName = (cwd: string): string => {
+	const name = basename(cwd) || parse(cwd).root || cwd || "cwd";
+	return truncateToWidth(name, MAX_CWD_NAME_WIDTH, "…");
+};
 
 export default function (pi: ExtensionAPI) {
 	let renderFooter: (() => void) | undefined;
@@ -331,8 +338,9 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 				render(width: number): string[] {
+					const cwdName = formatCwdName(ctx.cwd);
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
-					const leftRaw = `⑂ ${branch} ${formatPending(git)}`;
+					const leftRaw = `${cwdName} ⑂ ${branch} ${formatPending(git)}`;
 					const centerRaw = summary.trim();
 					const rightRaw = getUsageText(ctx);
 
