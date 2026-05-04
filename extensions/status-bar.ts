@@ -34,7 +34,7 @@ type SummaryEntry = {
 	summary: string;
 	updatedAt: number;
 	entryCount: number;
-	source?: "ai" | "fallback";
+	source?: "ai" | "fallback" | "manual";
 };
 
 type GitState = {
@@ -53,6 +53,10 @@ const GIT_INTERVAL_MS = 15 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
 const MAX_SESSION_NAME_CHARS = 48;
 const MAX_CWD_NAME_WIDTH = 24;
+
+const options = {
+	manualTitleShortcut: process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+r",
+};
 
 const defaultGitState: GitState = {
 	branch: null,
@@ -144,7 +148,7 @@ const readLatestSummary = (entries: SessionEntry[]): SummaryEntry | undefined =>
 				summary: data.summary,
 				updatedAt: data.updatedAt,
 				entryCount: typeof data.entryCount === "number" ? data.entryCount : 0,
-				source: data.source === "fallback" ? "fallback" : "ai",
+				source: data.source === "manual" ? "manual" : data.source === "fallback" ? "fallback" : "ai",
 			};
 		}
 	}
@@ -184,6 +188,7 @@ export default function (pi: ExtensionAPI) {
 	let summaryUpdatedAt = 0;
 	let summaryEntryCount = 0;
 	let summaryIsFallback = false;
+	let summaryIsManual = false;
 	let summarizing = false;
 	let lastSummaryError: string | undefined;
 	let git: GitState = { ...defaultGitState };
@@ -193,18 +198,19 @@ export default function (pi: ExtensionAPI) {
 
 	const requestRender = () => renderFooter?.();
 
-	const applySummary = (nextSummary: string, entryCount: number, isFallback: boolean) => {
+	const applySummary = (nextSummary: string, entryCount: number, source: "ai" | "fallback" | "manual") => {
 		summary = nextSummary;
 		summaryUpdatedAt = Date.now();
 		summaryEntryCount = entryCount;
-		summaryIsFallback = isFallback;
-		if (!isFallback) lastSummaryError = undefined;
+		summaryIsFallback = source === "fallback";
+		summaryIsManual = source === "manual";
+		if (source !== "fallback") lastSummaryError = undefined;
 		pi.setSessionName(summary);
 		pi.appendEntry(CUSTOM_TYPE, {
 			summary,
 			updatedAt: summaryUpdatedAt,
 			entryCount: summaryEntryCount,
-			source: isFallback ? "fallback" : "ai",
+			source,
 		});
 		requestRender();
 	};
@@ -255,7 +261,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const refreshSummary = async (ctx: ExtensionContext, force = false) => {
-		if (summarizing) return;
+		if (summarizing || summaryIsManual) return;
 
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
 		const entryCount = countEntries(branch);
@@ -315,7 +321,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			applySummary(nextSummary, entryCount, false);
+			applySummary(nextSummary, entryCount, "ai");
 		} catch (error) {
 			lastSummaryError = error instanceof Error ? error.message : String(error);
 		} finally {
@@ -363,7 +369,7 @@ export default function (pi: ExtensionAPI) {
 
 					const left = theme.fg(git.pending && git.pending > 0 ? "warning" : "success", leftRaw);
 					const right = theme.fg("dim", truncateToWidth(rightRaw, Math.min(32, Math.max(12, Math.floor(width * 0.3))), "…"));
-					const centerColor = summaryIsFallback ? "warning" : "dim";
+					const centerColor = summaryIsFallback ? "warning" : summaryIsManual ? "success" : "dim";
 					const reserved = visibleWidth(left) + visibleWidth(right) + 2;
 					const center = centerRaw ? theme.fg(centerColor, truncateToWidth(centerRaw, Math.max(0, width - reserved), "…")) : "";
 					const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(center) - visibleWidth(right)));
@@ -392,12 +398,14 @@ export default function (pi: ExtensionAPI) {
 			summaryUpdatedAt = saved?.updatedAt ?? 0;
 			summaryEntryCount = saved?.entryCount ?? 0;
 			summaryIsFallback = false;
+			summaryIsManual = saved?.source === "manual";
 			if (summary) pi.setSessionName(summary);
 		} else {
 			summary = "";
 			summaryUpdatedAt = 0;
 			summaryEntryCount = saved.entryCount;
 			summaryIsFallback = false;
+			summaryIsManual = false;
 		}
 
 		if (!ctx.hasUI) return;
@@ -419,12 +427,39 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setFooter(undefined);
 	});
 
+	const promptForManualTitle = async (ctx: ExtensionContext) => {
+		const title = cleanSummary((await ctx.ui.input("Session title:", summary || pi.getSessionName() || "")) ?? "");
+		if (!title) {
+			ctx.ui.notify("Session title unchanged", "info");
+			return;
+		}
+
+		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
+		applySummary(title, countEntries(branch), "manual");
+		ctx.ui.notify("Session title set manually; auto-title disabled", "success");
+	};
+
+	pi.registerShortcut(options.manualTitleShortcut, {
+		description: "Set the session title manually",
+		handler: promptForManualTitle,
+	});
+
+	pi.registerCommand("session-bar-title", {
+		description: "Set the session title manually and stop AI title updates",
+		handler: async (_args, ctx) => promptForManualTitle(ctx),
+	});
+
 	pi.registerCommand("session-bar-refresh", {
 		description: "Refresh the sticky git/session summary bar now",
 		handler: async (_args, ctx) => {
 			await refreshGit(ctx);
 			await refreshSummary(ctx, true);
-			ctx.ui.notify(lastSummaryError ? `Session bar refreshed; AI summary failed: ${lastSummaryError}` : "Session bar refreshed", lastSummaryError ? "warning" : "info");
+			const message = summaryIsManual
+				? "Session bar refreshed; manual title preserved"
+				: lastSummaryError
+					? `Session bar refreshed; AI summary failed: ${lastSummaryError}`
+					: "Session bar refreshed";
+			ctx.ui.notify(message, lastSummaryError && !summaryIsManual ? "warning" : "info");
 		},
 	});
 
@@ -436,7 +471,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(
 				[
 					`model=${model}`,
-					`summarySource=${summaryIsFallback ? "fallback" : "ai"}`,
+					`summarySource=${summaryIsManual ? "manual" : summaryIsFallback ? "fallback" : "ai"}`,
 					`summaryEntries=${summaryEntryCount}`,
 					`auth=${auth ? (auth.ok ? "ok" : auth.error) : "none"}`,
 					`lastError=${lastSummaryError ?? "none"}`,
