@@ -35,6 +35,12 @@ After install, restart Pi or run:
 Set the session title manually. Once set, AI title refreshes stop overwriting it.
 
 ```text
+/session-bar-clear-title
+```
+
+Clear a manually set session title and resume AI title updates.
+
+```text
 /session-bar-refresh
 ```
 

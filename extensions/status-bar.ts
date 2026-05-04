@@ -438,6 +438,32 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify("Session title set manually; auto-title disabled", "success");
 	};
 
+	const clearManualTitle = async (ctx: ExtensionContext) => {
+		if (!summaryIsManual) {
+			ctx.ui.notify("No manual session title to clear", "info");
+			return;
+		}
+
+		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
+		summary = "";
+		summaryUpdatedAt = 0;
+		summaryEntryCount = countEntries(branch);
+		summaryIsFallback = false;
+		summaryIsManual = false;
+		lastSummaryError = undefined;
+		pi.setSessionName("");
+		pi.appendEntry(CUSTOM_TYPE, {
+			summary,
+			updatedAt: Date.now(),
+			entryCount: summaryEntryCount,
+			source: "fallback",
+		});
+		requestRender();
+
+		await refreshSummary(ctx, true);
+		ctx.ui.notify(lastSummaryError ? `Manual session title cleared; AI summary failed: ${lastSummaryError}` : "Manual session title cleared", lastSummaryError ? "warning" : "success");
+	};
+
 	pi.registerShortcut(options.manualTitleShortcut, {
 		description: "Set the session title manually",
 		handler: promptForManualTitle,
@@ -446,6 +472,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("session-bar-title", {
 		description: "Set the session title manually and stop AI title updates",
 		handler: async (_args, ctx) => promptForManualTitle(ctx),
+	});
+
+	pi.registerCommand("session-bar-clear-title", {
+		description: "Clear the manual session title and resume AI title updates",
+		handler: async (_args, ctx) => clearManualTitle(ctx),
 	});
 
 	pi.registerCommand("session-bar-refresh", {
