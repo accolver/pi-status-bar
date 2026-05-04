@@ -369,9 +369,8 @@ export default function (pi: ExtensionAPI) {
 
 					const left = theme.fg(git.pending && git.pending > 0 ? "warning" : "success", leftRaw);
 					const right = theme.fg("dim", truncateToWidth(rightRaw, Math.min(32, Math.max(12, Math.floor(width * 0.3))), "…"));
-					const centerColor = summaryIsFallback ? "warning" : summaryIsManual ? "success" : "dim";
 					const reserved = visibleWidth(left) + visibleWidth(right) + 2;
-					const center = centerRaw ? theme.fg(centerColor, truncateToWidth(centerRaw, Math.max(0, width - reserved), "…")) : "";
+					const center = centerRaw ? theme.fg("accent", truncateToWidth(centerRaw, Math.max(0, width - reserved), "…")) : "";
 					const gap = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(center) - visibleWidth(right)));
 					return [truncateToWidth(left + (center ? " " + center : "") + gap + right, width, "")];
 				},
