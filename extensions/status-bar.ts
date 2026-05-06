@@ -51,6 +51,8 @@ const SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
 const SUMMARY_MIN_ENTRY_DELTA = 2;
 const GIT_INTERVAL_MS = 15 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
+const MAX_CONVERSATION_INITIAL_CHARS = 4_000;
+const MAX_CONVERSATION_RECENT_CHARS = MAX_CONVERSATION_CHARS - MAX_CONVERSATION_INITIAL_CHARS;
 const MAX_SESSION_NAME_CHARS = 48;
 const MAX_CWD_NAME_WIDTH = 24;
 
@@ -113,16 +115,29 @@ const buildConversationText = (entries: SessionEntry[]): string => {
 
 	const fullText = sections.join("\n\n");
 	if (fullText.length <= MAX_CONVERSATION_CHARS) return fullText;
-	return fullText.slice(-MAX_CONVERSATION_CHARS);
+
+	return [
+		fullText.slice(0, MAX_CONVERSATION_INITIAL_CHARS).trim(),
+		"\n\n[...middle of conversation omitted...]\n\n",
+		fullText.slice(-MAX_CONVERSATION_RECENT_CHARS).trim(),
+	].join("");
 };
 
-const buildSummaryPrompt = (conversationText: string): string =>
+const buildSummaryPrompt = (conversationText: string, currentTitle: string): string =>
 	[
 		"Create an extremely short Pi session title for this conversation.",
 		"Return one brief statement only, no markdown, no bullets.",
-		"Capture only the main topic and completed/current work.",
+		"Maintain a stable, broad title for the whole session, not just the latest action.",
+		"If the current title still fits the overarching goal, keep it or lightly refine it.",
+		"Do not retitle around transient follow-up actions like commit, push, run tests, inspect logs, or answer a question unless they become the new main goal.",
+		"Example: if the goal is 'Fix failing tests' and the latest user says 'Great, now commit this', prefer 'Fix failing tests' over 'Committing work'.",
+		"Capture the main topic plus meaningful current phase only when it adds context.",
 		"Omit next steps, recommendations, and secondary details.",
 		"Prefer 3-6 words. Hard limit: 48 characters.",
+		"",
+		"<current_title>",
+		currentTitle || "(none)",
+		"</current_title>",
 		"",
 		"<conversation>",
 		conversationText,
@@ -293,7 +308,7 @@ export default function (pi: ExtensionAPI) {
 					messages: [
 						{
 							role: "user" as const,
-							content: [{ type: "text" as const, text: buildSummaryPrompt(conversationText) }],
+							content: [{ type: "text" as const, text: buildSummaryPrompt(conversationText, summary) }],
 							timestamp: Date.now(),
 						},
 					],
