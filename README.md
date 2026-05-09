@@ -7,6 +7,7 @@ A small [Pi](https://pi.dev) extension that replaces the default TUI footer with
 - Sticky footer for Pi's interactive TUI.
 - Current working folder, git branch, git worktree marker, and pending change counts.
 - AI-generated session title, refreshed as the conversation evolves.
+- Graceful fallback session title when model auth or title generation is unavailable.
 - Manual session title override with `ctrl+r` or `/session-bar-title`.
 - Resume-friendly session names via `pi.setSessionName(...)`.
 - Theme-aware colors using Pi theme tokens.
@@ -62,7 +63,7 @@ The extension uses Pi's extension APIs:
 
 - `ctx.ui.setFooter(...)` for the sticky TUI footer.
 - `pi.exec(...)` for read-only git status checks.
-- `complete(...)` with the currently selected Pi model for short summaries.
+- `completeSimple(...)` with the currently selected Pi model for short summaries, falling back to a local title if auth/model calls fail.
 - `pi.setSessionName(...)` so `/resume` shows the generated session title.
 - `pi.appendEntry(...)` to persist summary metadata without adding it to LLM context.
 

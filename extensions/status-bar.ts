@@ -9,10 +9,8 @@
  */
 
 import { basename, parse } from "node:path";
-import { completeSimple } from "@mariozechner/pi-ai";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type ContentBlock = {
 	type?: string;
@@ -55,6 +53,7 @@ const MAX_CONVERSATION_INITIAL_CHARS = 4_000;
 const MAX_CONVERSATION_RECENT_CHARS = MAX_CONVERSATION_CHARS - MAX_CONVERSATION_INITIAL_CHARS;
 const MAX_SESSION_NAME_CHARS = 48;
 const MAX_CWD_NAME_WIDTH = 24;
+const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 const options = {
 	manualTitleShortcut: process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+r",
@@ -67,6 +66,46 @@ const defaultGitState: GitState = {
 	staged: null,
 	unstaged: null,
 	untracked: null,
+};
+
+const visibleWidth = (text: string): number => text.replace(ANSI_ESCAPE_PATTERN, "").length;
+
+const truncateToWidth = (text: string, maxWidth: number, suffix = "…"): string => {
+	if (maxWidth <= 0) return "";
+	if (visibleWidth(text) <= maxWidth) return text;
+
+	const suffixWidth = visibleWidth(suffix);
+	const targetWidth = Math.max(0, maxWidth - suffixWidth);
+	let output = "";
+	let width = 0;
+	let inEscape = false;
+	let escapeBuffer = "";
+
+	for (const char of text) {
+		if (char === "\x1B") {
+			inEscape = true;
+			escapeBuffer = char;
+			continue;
+		}
+
+		if (inEscape) {
+			escapeBuffer += char;
+			if (/[A-Za-z~]/.test(char)) {
+				output += escapeBuffer;
+				inEscape = false;
+				escapeBuffer = "";
+			}
+			continue;
+		}
+
+		if (width + 1 > targetWidth) break;
+		output += char;
+		width += 1;
+	}
+
+	const reset = ANSI_ESCAPE_PATTERN.test(text) ? "\x1B[0m" : "";
+	ANSI_ESCAPE_PATTERN.lastIndex = 0;
+	return `${output.trimEnd()}${suffix}${reset}`;
 };
 
 const extractTextParts = (content: unknown): string[] => {
@@ -148,6 +187,27 @@ const cleanSummary = (text: string): string => {
 	const singleLine = text.replace(/\s+/g, " ").trim().replace(/^['\"]|['\"]$/g, "");
 	if (singleLine.length <= MAX_SESSION_NAME_CHARS) return singleLine;
 	return `${singleLine.slice(0, MAX_SESSION_NAME_CHARS - 1).trim()}…`;
+};
+
+const buildFallbackSummary = (conversationText: string, cwd: string): string => {
+	const lastUserLine = conversationText
+		.split("\n")
+		.reverse()
+		.find((line) => line.startsWith("User: "))
+		?.replace(/^User:\s*/, "")
+		.replace(/<[^>]+>/g, " ")
+		.replace(/[`*_#>\[\](){}]/g, " ")
+		.trim();
+
+	return cleanSummary(lastUserLine || formatCwdName(cwd) || "Pi session") || "Pi session";
+};
+
+const loadCompleteSimple = async () => {
+	try {
+		return (await import("@earendil-works/pi-ai")).completeSimple;
+	} catch {
+		return undefined;
+	}
 };
 
 const countEntries = (entries: SessionEntry[]): number =>
@@ -283,19 +343,31 @@ export default function (pi: ExtensionAPI) {
 		const conversationText = buildConversationText(branch);
 		if (!conversationText.trim()) return;
 
+		const applyFallbackIfNeeded = (reason: string) => {
+			lastSummaryError = reason;
+			if (summary.trim() && !summaryIsFallback) return;
+			applySummary(buildFallbackSummary(conversationText, ctx.cwd), entryCount, "fallback");
+		};
+
 		const hasEnoughNewConversation = entryCount - summaryEntryCount >= SUMMARY_MIN_ENTRY_DELTA;
 		if (!force && !summaryIsFallback && summaryUpdatedAt > 0 && !hasEnoughNewConversation) return;
 
 		const model = ctx.model;
 		if (!model) {
-			lastSummaryError = "No model selected";
+			applyFallbackIfNeeded("No model selected");
 			return;
 		}
 
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
-				lastSummaryError = auth.error;
+				applyFallbackIfNeeded(auth.error);
+				return;
+			}
+
+			const completeSimple = await loadCompleteSimple();
+			if (!completeSimple) {
+				applyFallbackIfNeeded("@earendil-works/pi-ai is unavailable");
 				return;
 			}
 
@@ -321,7 +393,7 @@ export default function (pi: ExtensionAPI) {
 			);
 
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
-				lastSummaryError = response.errorMessage ?? `Model stopped: ${response.stopReason}`;
+				applyFallbackIfNeeded(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
 				return;
 			}
 
@@ -332,13 +404,13 @@ export default function (pi: ExtensionAPI) {
 					.join("\n"),
 			);
 			if (!nextSummary) {
-				lastSummaryError = "Model returned no text";
+				applyFallbackIfNeeded("Model returned no text");
 				return;
 			}
 
 			applySummary(nextSummary, entryCount, "ai");
 		} catch (error) {
-			lastSummaryError = error instanceof Error ? error.message : String(error);
+			applyFallbackIfNeeded(error instanceof Error ? error.message : String(error));
 		} finally {
 			summarizing = false;
 			requestRender();
