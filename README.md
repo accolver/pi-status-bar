@@ -8,7 +8,7 @@ A small [Pi](https://pi.dev) extension that replaces the default TUI footer with
 - Current working folder, git branch, git worktree marker, and pending change counts.
 - AI-generated session title, refreshed as the conversation evolves.
 - Graceful fallback session title when model auth or title generation is unavailable.
-- Manual session title override with `ctrl+r` or `/session-bar-title`.
+- Manual session title override with `ctrl+shift+r` or `/session-bar-title`.
 - Resume-friendly session names via `pi.setSessionName(...)`.
 - Theme-aware colors using Pi theme tokens.
 - No background timers in non-TUI/print mode.
@@ -55,7 +55,7 @@ Toggle the status bar for the current session.
 
 ## Shortcut
 
-Press `ctrl+r` to enter a manual session title. To change the shortcut, set `PI_STATUS_BAR_TITLE_SHORTCUT` or edit `options.manualTitleShortcut` in `extensions/status-bar.ts`.
+Press `ctrl+shift+r` to enter a manual session title. To change the shortcut, set `PI_STATUS_BAR_TITLE_SHORTCUT` or edit `options.manualTitleShortcut` in `extensions/status-bar.ts`.
 
 ## How it works
 

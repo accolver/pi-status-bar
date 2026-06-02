@@ -56,7 +56,7 @@ const MAX_CWD_NAME_WIDTH = 24;
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 const options = {
-	manualTitleShortcut: process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+r",
+	manualTitleShortcut: process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+shift+r",
 };
 
 const defaultGitState: GitState = {
