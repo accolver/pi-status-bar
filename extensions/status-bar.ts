@@ -38,6 +38,7 @@ type SummaryEntry = {
 type GitState = {
 	branch: string | null;
 	isWorktree: boolean;
+	worktreeName: string | null;
 	pending: number | null;
 	staged: number | null;
 	unstaged: number | null;
@@ -62,6 +63,7 @@ const options = {
 const defaultGitState: GitState = {
 	branch: null,
 	isWorktree: false,
+	worktreeName: null,
 	pending: null,
 	staged: null,
 	unstaged: null,
@@ -248,13 +250,17 @@ const formatCwdName = (cwd: string): string => {
 	return truncateToWidth(name, MAX_CWD_NAME_WIDTH, "…");
 };
 
-const parseWorktreeState = (stdout: string): boolean => {
-	const [insideWorkTree, gitDir, gitCommonDir] = stdout
+const parseWorktreeState = (stdout: string): Pick<GitState, "isWorktree" | "worktreeName"> => {
+	const [insideWorkTree, gitDir, gitCommonDir, worktreeRoot] = stdout
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean);
+	const isWorktree = insideWorkTree === "true" && Boolean(gitDir) && Boolean(gitCommonDir) && gitDir !== gitCommonDir;
 
-	return insideWorkTree === "true" && Boolean(gitDir) && Boolean(gitCommonDir) && gitDir !== gitCommonDir;
+	return {
+		isWorktree,
+		worktreeName: isWorktree && worktreeRoot ? basename(worktreeRoot) || null : null,
+	};
 };
 
 export default function (pi: ExtensionAPI) {
@@ -294,10 +300,14 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const branchResult = await pi.exec("git", ["branch", "--show-current"], { cwd: ctx.cwd, timeout: 2000 });
 			const statusResult = await pi.exec("git", ["status", "--porcelain=v1"], { cwd: ctx.cwd, timeout: 3000 });
-			const worktreeResult = await pi.exec("git", ["rev-parse", "--is-inside-work-tree", "--git-dir", "--git-common-dir"], {
-				cwd: ctx.cwd,
-				timeout: 2000,
-			});
+			const worktreeResult = await pi.exec(
+				"git",
+				["rev-parse", "--is-inside-work-tree", "--git-dir", "--git-common-dir", "--show-toplevel"],
+				{
+					cwd: ctx.cwd,
+					timeout: 2000,
+				},
+			);
 
 			if (branchResult.code !== 0 || statusResult.code !== 0) {
 				git = { ...defaultGitState };
@@ -320,9 +330,11 @@ export default function (pi: ExtensionAPI) {
 				if (y && y !== " ") unstaged++;
 			}
 
+			const worktree = worktreeResult.code === 0 ? parseWorktreeState(worktreeResult.stdout) : defaultGitState;
 			git = {
 				branch: branchResult.stdout.trim() || null,
-				isWorktree: worktreeResult.code === 0 ? parseWorktreeState(worktreeResult.stdout) : false,
+				isWorktree: worktree.isWorktree,
+				worktreeName: worktree.worktreeName,
 				pending: lines.length,
 				staged,
 				unstaged,
@@ -449,8 +461,9 @@ export default function (pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const cwdName = formatCwdName(ctx.cwd);
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
+					const gitName = git.isWorktree ? git.worktreeName ?? branch : branch;
 					const worktreeMarker = git.isWorktree ? " worktree" : "";
-					const leftRaw = `${cwdName} ⑂ ${branch}${worktreeMarker} ${formatPending(git)}`;
+					const leftRaw = `${cwdName} ⑂ ${gitName}${worktreeMarker} ${formatPending(git)}`;
 					const centerRaw = summary.trim();
 					const rightRaw = getUsageText(ctx);
 
