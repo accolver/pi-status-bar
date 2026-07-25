@@ -35,6 +35,8 @@ type SummaryEntry = {
 	source?: "ai" | "fallback" | "manual";
 };
 
+type Shortcut = Parameters<ExtensionAPI["registerShortcut"]>[0];
+
 type GitState = {
 	branch: string | null;
 	isWorktree: boolean;
@@ -57,7 +59,7 @@ const MAX_CWD_NAME_WIDTH = 24;
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 const options = {
-	manualTitleShortcut: process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+shift+r",
+	manualTitleShortcut: (process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+shift+r") as Shortcut,
 };
 
 const defaultGitState: GitState = {
@@ -206,7 +208,7 @@ const buildFallbackSummary = (conversationText: string, cwd: string): string => 
 
 const loadCompleteSimple = async () => {
 	try {
-		return (await import("@earendil-works/pi-ai")).completeSimple;
+		return (await import("@earendil-works/pi-ai/compat")).completeSimple;
 	} catch {
 		return undefined;
 	}
@@ -535,7 +537,7 @@ export default function (pi: ExtensionAPI) {
 
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
 		applySummary(title, countEntries(branch), "manual");
-		ctx.ui.notify("Session title set manually; auto-title disabled", "success");
+		ctx.ui.notify("Session title set manually; auto-title disabled", "info");
 	};
 
 	const clearManualTitle = async (ctx: ExtensionContext) => {
@@ -561,7 +563,7 @@ export default function (pi: ExtensionAPI) {
 		requestRender();
 
 		await refreshSummary(ctx, true);
-		ctx.ui.notify(lastSummaryError ? `Manual session title cleared; AI summary failed: ${lastSummaryError}` : "Manual session title cleared", lastSummaryError ? "warning" : "success");
+		ctx.ui.notify(lastSummaryError ? `Manual session title cleared; AI summary failed: ${lastSummaryError}` : "Manual session title cleared", lastSummaryError ? "warning" : "info");
 	};
 
 	pi.registerShortcut(options.manualTitleShortcut, {

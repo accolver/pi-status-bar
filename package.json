@@ -40,5 +40,13 @@
     "@earendil-works/pi-ai": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "check": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --strict extensions/status-bar.ts"
   }
 }
