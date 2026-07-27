@@ -15,7 +15,13 @@ A small [Pi](https://pi.dev) extension that replaces the default TUI footer with
 
 ## Install
 
-From GitHub:
+From npm:
+
+```bash
+pi install npm:@accolver/pi-status-bar
+```
+
+Or install directly from GitHub:
 
 ```bash
 pi install git:github.com/accolver/pi-status-bar
