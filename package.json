@@ -50,6 +50,7 @@
     "typescript": "^7.0.2"
   },
   "scripts": {
-    "check": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --strict extensions/status-bar.ts"
+    "check": "tsc --noEmit --skipLibCheck --module NodeNext --moduleResolution NodeNext --target ES2022 --strict extensions/status-bar.ts",
+    "test": "bun test"
   }
 }

@@ -39,6 +39,7 @@ type Shortcut = Parameters<ExtensionAPI["registerShortcut"]>[0];
 
 type GitState = {
 	branch: string | null;
+	prNumber: number | null;
 	isWorktree: boolean;
 	worktreeName: string | null;
 	pending: number | null;
@@ -51,6 +52,7 @@ const CUSTOM_TYPE = "pi-status-bar-summary";
 const SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
 const SUMMARY_MIN_ENTRY_DELTA = 2;
 const GIT_INTERVAL_MS = 15 * 1000;
+const PULL_REQUEST_INTERVAL_MS = 60 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
 const MAX_CONVERSATION_INITIAL_CHARS = 4_000;
 const MAX_CONVERSATION_RECENT_CHARS = MAX_CONVERSATION_CHARS - MAX_CONVERSATION_INITIAL_CHARS;
@@ -64,6 +66,7 @@ const options = {
 
 const defaultGitState: GitState = {
 	branch: null,
+	prNumber: null,
 	isWorktree: false,
 	worktreeName: null,
 	pending: null,
@@ -71,6 +74,17 @@ const defaultGitState: GitState = {
 	unstaged: null,
 	untracked: null,
 };
+
+export const parsePullRequestNumber = (stdout: string): number | null => {
+	const value = stdout.trim();
+	if (!/^\d+$/.test(value)) return null;
+
+	const number = Number(value);
+	return Number.isSafeInteger(number) && number > 0 ? number : null;
+};
+
+export const formatPullRequestMarker = (prNumber: number | null): string =>
+	prNumber === null ? "" : ` #${prNumber}`;
 
 const visibleWidth = (text: string): number => text.replace(ANSI_ESCAPE_PATTERN, "").length;
 
@@ -275,6 +289,8 @@ export default function (pi: ExtensionAPI) {
 	let summarizing = false;
 	let lastSummaryError: string | undefined;
 	let git: GitState = { ...defaultGitState };
+	let pullRequestBranch: string | null = null;
+	let pullRequestUpdatedAt = 0;
 	let gitTimer: NodeJS.Timeout | undefined;
 	let summaryTimer: NodeJS.Timeout | undefined;
 	let enabled = true;
@@ -298,7 +314,7 @@ export default function (pi: ExtensionAPI) {
 		requestRender();
 	};
 
-	const refreshGit = async (ctx: ExtensionContext) => {
+	const refreshGit = async (ctx: ExtensionContext, forcePullRequest = false) => {
 		try {
 			const branchResult = await pi.exec("git", ["branch", "--show-current"], { cwd: ctx.cwd, timeout: 2000 });
 			const statusResult = await pi.exec("git", ["status", "--porcelain=v1"], { cwd: ctx.cwd, timeout: 3000 });
@@ -313,10 +329,13 @@ export default function (pi: ExtensionAPI) {
 
 			if (branchResult.code !== 0 || statusResult.code !== 0) {
 				git = { ...defaultGitState };
+				pullRequestBranch = null;
+				pullRequestUpdatedAt = 0;
 				requestRender();
 				return;
 			}
 
+			const branch = branchResult.stdout.trim() || null;
 			const lines = statusResult.stdout.split("\n").filter((line) => line.trim().length > 0);
 			let staged = 0;
 			let unstaged = 0;
@@ -334,7 +353,8 @@ export default function (pi: ExtensionAPI) {
 
 			const worktree = worktreeResult.code === 0 ? parseWorktreeState(worktreeResult.stdout) : defaultGitState;
 			git = {
-				branch: branchResult.stdout.trim() || null,
+				branch,
+				prNumber: git.branch === branch ? git.prNumber : null,
 				isWorktree: worktree.isWorktree,
 				worktreeName: worktree.worktreeName,
 				pending: lines.length,
@@ -343,8 +363,31 @@ export default function (pi: ExtensionAPI) {
 				untracked,
 			};
 			requestRender();
+
+			if (!branch) return;
+			const pullRequestIsStale = Date.now() - pullRequestUpdatedAt >= PULL_REQUEST_INTERVAL_MS;
+			if (!forcePullRequest && pullRequestBranch === branch && !pullRequestIsStale) return;
+
+			pullRequestBranch = branch;
+			pullRequestUpdatedAt = Date.now();
+			try {
+				const pullRequestResult = await pi.exec(
+					"gh",
+					["pr", "view", branch, "--json", "number", "--jq", ".number"],
+					{ cwd: ctx.cwd, timeout: 5000 },
+				);
+				if (git.branch !== branch) return;
+				git.prNumber = pullRequestResult.code === 0 ? parsePullRequestNumber(pullRequestResult.stdout) : null;
+				requestRender();
+			} catch {
+				if (git.branch !== branch) return;
+				git.prNumber = null;
+				requestRender();
+			}
 		} catch {
 			git = { ...defaultGitState };
+			pullRequestBranch = null;
+			pullRequestUpdatedAt = 0;
 			requestRender();
 		}
 	};
@@ -464,8 +507,9 @@ export default function (pi: ExtensionAPI) {
 					const cwdName = formatCwdName(ctx.cwd);
 					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
 					const gitName = git.isWorktree ? git.worktreeName ?? branch : branch;
+					const pullRequestMarker = formatPullRequestMarker(git.prNumber);
 					const worktreeMarker = git.isWorktree ? " worktree" : "";
-					const leftRaw = `${cwdName} ⑂ ${gitName}${worktreeMarker} ${formatPending(git)}`;
+					const leftRaw = `${cwdName} ⑂ ${gitName}${pullRequestMarker}${worktreeMarker} ${formatPending(git)}`;
 					const centerRaw = summary.trim();
 					const rightRaw = getUsageText(ctx);
 
@@ -584,7 +628,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("session-bar-refresh", {
 		description: "Refresh the sticky git/session summary bar now",
 		handler: async (_args, ctx) => {
-			await refreshGit(ctx);
+			await refreshGit(ctx, true);
 			await refreshSummary(ctx, true);
 			const message = summaryIsManual
 				? "Session bar refreshed; manual title preserved"
