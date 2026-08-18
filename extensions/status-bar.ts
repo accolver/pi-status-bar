@@ -51,6 +51,7 @@ type GitState = {
 const CUSTOM_TYPE = "pi-status-bar-summary";
 const SUMMARY_INTERVAL_MS = 5 * 60 * 1000;
 const SUMMARY_MIN_ENTRY_DELTA = 2;
+const SUMMARY_TIMEOUT_MS = 30 * 1000;
 const GIT_INTERVAL_MS = 15 * 1000;
 const PULL_REQUEST_INTERVAL_MS = 60 * 1000;
 const MAX_CONVERSATION_CHARS = 24_000;
@@ -58,7 +59,9 @@ const MAX_CONVERSATION_INITIAL_CHARS = 4_000;
 const MAX_CONVERSATION_RECENT_CHARS = MAX_CONVERSATION_CHARS - MAX_CONVERSATION_INITIAL_CHARS;
 const MAX_SESSION_NAME_CHARS = 48;
 const MAX_CWD_NAME_WIDTH = 24;
-const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
+const ANSI_ESCAPE_PATTERN = /(?:\x1B\][\s\S]*?(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~])/g;
+const HAS_ANSI_ESCAPE_PATTERN = /(?:\x1B\][\s\S]*?(?:\x07|\x1B\\)|\x1B\[[0-?]*[ -/]*[@-~])/;
+const CONTROL_CHARACTER_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 
 const options = {
 	manualTitleShortcut: (process.env.PI_STATUS_BAR_TITLE_SHORTCUT ?? "ctrl+shift+r") as Shortcut,
@@ -86,9 +89,46 @@ export const parsePullRequestNumber = (stdout: string): number | null => {
 export const formatPullRequestMarker = (prNumber: number | null): string =>
 	prNumber === null ? "" : ` #${prNumber}`;
 
-const visibleWidth = (text: string): number => text.replace(ANSI_ESCAPE_PATTERN, "").length;
+const stripTerminalControls = (text: string): string =>
+	text.replace(ANSI_ESCAPE_PATTERN, "").replace(CONTROL_CHARACTER_PATTERN, "");
 
-const truncateToWidth = (text: string, maxWidth: number, suffix = "…"): string => {
+const isCombiningCodePoint = (codePoint: number): boolean =>
+	(codePoint >= 0x0300 && codePoint <= 0x036f) ||
+	(codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+	(codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+	(codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+	(codePoint >= 0xfe20 && codePoint <= 0xfe2f);
+
+const isWideCodePoint = (codePoint: number): boolean =>
+	codePoint >= 0x1100 &&
+	(codePoint <= 0x115f ||
+		codePoint === 0x2329 ||
+		codePoint === 0x232a ||
+		(codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+		(codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+		(codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+		(codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+		(codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+		(codePoint >= 0xff00 && codePoint <= 0xff60) ||
+		(codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+		(codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+		(codePoint >= 0x20000 && codePoint <= 0x3fffd));
+
+const characterWidth = (char: string): number => {
+	const codePoint = char.codePointAt(0);
+	if (codePoint === undefined) return 0;
+	if (codePoint === 0x200d || codePoint === 0xfe0f || isCombiningCodePoint(codePoint)) return 0;
+	if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint < 0xa0)) return 0;
+	return isWideCodePoint(codePoint) ? 2 : 1;
+};
+
+export const visibleWidth = (text: string): number => {
+	let width = 0;
+	for (const char of stripTerminalControls(text)) width += characterWidth(char);
+	return width;
+};
+
+export const truncateToWidth = (text: string, maxWidth: number, suffix = "…"): string => {
 	if (maxWidth <= 0) return "";
 	if (visibleWidth(text) <= maxWidth) return text;
 
@@ -108,7 +148,7 @@ const truncateToWidth = (text: string, maxWidth: number, suffix = "…"): string
 
 		if (inEscape) {
 			escapeBuffer += char;
-			if (/[A-Za-z~]/.test(char)) {
+			if (/[A-Za-z~]/.test(char) || char === "\x07") {
 				output += escapeBuffer;
 				inEscape = false;
 				escapeBuffer = "";
@@ -116,13 +156,13 @@ const truncateToWidth = (text: string, maxWidth: number, suffix = "…"): string
 			continue;
 		}
 
-		if (width + 1 > targetWidth) break;
+		const charWidth = characterWidth(char);
+		if (width + charWidth > targetWidth) break;
 		output += char;
-		width += 1;
+		width += charWidth;
 	}
 
-	const reset = ANSI_ESCAPE_PATTERN.test(text) ? "\x1B[0m" : "";
-	ANSI_ESCAPE_PATTERN.lastIndex = 0;
+	const reset = HAS_ANSI_ESCAPE_PATTERN.test(text) ? "\x1B[0m" : "";
 	return `${output.trimEnd()}${suffix}${reset}`;
 };
 
@@ -201,10 +241,10 @@ const buildSummaryPrompt = (conversationText: string, currentTitle: string): str
 		"</conversation>",
 	].join("\n");
 
-const cleanSummary = (text: string): string => {
-	const singleLine = text.replace(/\s+/g, " ").trim().replace(/^['\"]|['\"]$/g, "");
-	if (singleLine.length <= MAX_SESSION_NAME_CHARS) return singleLine;
-	return `${singleLine.slice(0, MAX_SESSION_NAME_CHARS - 1).trim()}…`;
+export const cleanSummary = (text: string): string => {
+	const singleLine = stripTerminalControls(text).replace(/\s+/g, " ").trim().replace(/^['\"]|['\"]$/g, "");
+	if (visibleWidth(singleLine) <= MAX_SESSION_NAME_CHARS) return singleLine;
+	return truncateToWidth(singleLine, MAX_SESSION_NAME_CHARS, "…");
 };
 
 const buildFallbackSummary = (conversationText: string, cwd: string): string => {
@@ -262,7 +302,7 @@ const formatPending = (git: GitState): string => {
 const formatCount = (n: number): string => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
 
 const formatCwdName = (cwd: string): string => {
-	const name = basename(cwd) || parse(cwd).root || cwd || "cwd";
+	const name = stripTerminalControls(basename(cwd) || parse(cwd).root || cwd || "cwd");
 	return truncateToWidth(name, MAX_CWD_NAME_WIDTH, "…");
 };
 
@@ -293,6 +333,8 @@ export default function (pi: ExtensionAPI) {
 	let pullRequestUpdatedAt = 0;
 	let gitTimer: NodeJS.Timeout | undefined;
 	let summaryTimer: NodeJS.Timeout | undefined;
+	let summaryAbortController: AbortController | undefined;
+	let lifecycleGeneration = 0;
 	let enabled = true;
 
 	const requestRender = () => renderFooter?.();
@@ -373,7 +415,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const pullRequestResult = await pi.exec(
 					"gh",
-					["pr", "view", branch, "--json", "number", "--jq", ".number"],
+					["pr", "view", "--json", "number", "--jq", ".number"],
 					{ cwd: ctx.cwd, timeout: 5000 },
 				);
 				if (git.branch !== branch) return;
@@ -393,14 +435,17 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const refreshSummary = async (ctx: ExtensionContext, force = false) => {
-		if (summarizing || summaryIsManual) return;
+		if (summarizing || summaryIsManual || !enabled) return;
 
+		const generation = lifecycleGeneration;
+		let summaryTimeoutId: ReturnType<typeof setTimeout> | undefined;
 		const branch = ctx.sessionManager.getBranch() as SessionEntry[];
 		const entryCount = countEntries(branch);
 		const conversationText = buildConversationText(branch);
 		if (!conversationText.trim()) return;
 
 		const applyFallbackIfNeeded = (reason: string) => {
+			if (generation !== lifecycleGeneration) return;
 			lastSummaryError = reason;
 			if (summary.trim() && !summaryIsFallback) return;
 			applySummary(buildFallbackSummary(conversationText, ctx.cwd), entryCount, "fallback");
@@ -429,8 +474,11 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			summarizing = true;
+			const abortController = new AbortController();
+			summaryAbortController = abortController;
+			const signal = ctx.signal ? AbortSignal.any([ctx.signal, abortController.signal]) : abortController.signal;
 			requestRender();
-			const response = await completeSimple(
+			const completion = completeSimple(
 				model,
 				{
 					systemPrompt: "You write concise session titles for a coding-agent terminal UI.",
@@ -445,10 +493,19 @@ export default function (pi: ExtensionAPI) {
 				{
 					apiKey: auth.apiKey,
 					headers: auth.headers,
-					signal: ctx.signal,
+					signal,
 				},
 			);
+			completion.catch(() => undefined);
+			const timeout = new Promise<never>((_resolve, reject) => {
+				summaryTimeoutId = setTimeout(() => {
+					abortController.abort();
+					reject(new Error("Summary generation timed out"));
+				}, SUMMARY_TIMEOUT_MS);
+			});
+			const response = await Promise.race([completion, timeout]);
 
+			if (generation !== lifecycleGeneration) return;
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				applyFallbackIfNeeded(response.errorMessage ?? `Model stopped: ${response.stopReason}`);
 				return;
@@ -469,6 +526,8 @@ export default function (pi: ExtensionAPI) {
 		} catch (error) {
 			applyFallbackIfNeeded(error instanceof Error ? error.message : String(error));
 		} finally {
+			if (summaryTimeoutId) clearTimeout(summaryTimeoutId);
+			summaryAbortController = undefined;
 			summarizing = false;
 			requestRender();
 		}
@@ -505,13 +564,13 @@ export default function (pi: ExtensionAPI) {
 				invalidate() {},
 				render(width: number): string[] {
 					const cwdName = formatCwdName(ctx.cwd);
-					const branch = git.branch ?? footerData.getGitBranch() ?? "no git";
-					const gitName = git.isWorktree ? git.worktreeName ?? branch : branch;
+					const branch = stripTerminalControls(git.branch ?? footerData.getGitBranch() ?? "no git");
+					const gitName = stripTerminalControls(git.isWorktree ? git.worktreeName ?? branch : branch);
 					const pullRequestMarker = formatPullRequestMarker(git.prNumber);
 					const worktreeMarker = git.isWorktree ? " worktree" : "";
 					const leftRaw = `${cwdName} ⑂ ${gitName}${pullRequestMarker}${worktreeMarker} ${formatPending(git)}`;
-					const centerRaw = summary.trim();
-					const rightRaw = getUsageText(ctx);
+					const centerRaw = cleanSummary(summary);
+					const rightRaw = stripTerminalControls(getUsageText(ctx));
 
 					const left = theme.fg(git.pending && git.pending > 0 ? "warning" : "success", leftRaw);
 					const right = theme.fg("dim", truncateToWidth(rightRaw, Math.min(32, Math.max(12, Math.floor(width * 0.3))), "…"));
@@ -525,6 +584,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const startTimers = (ctx: ExtensionContext) => {
+		stopTimers();
 		gitTimer = setInterval(() => void refreshGit(ctx), GIT_INTERVAL_MS);
 		summaryTimer = setInterval(() => void refreshSummary(ctx), SUMMARY_INTERVAL_MS);
 	};
@@ -537,6 +597,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		lifecycleGeneration++;
 		const saved = readLatestSummary(ctx.sessionManager.getEntries() as SessionEntry[]);
 		if (saved?.source !== "fallback") {
 			summary = saved?.summary ?? pi.getSessionName() ?? summary;
@@ -553,21 +614,24 @@ export default function (pi: ExtensionAPI) {
 			summaryIsManual = false;
 		}
 
-		if (!ctx.hasUI) return;
+		if (ctx.mode !== "tui" || !enabled) return;
 
-		if (enabled) installFooter(ctx);
+		installFooter(ctx);
 		await refreshGit(ctx);
 		void refreshSummary(ctx);
 		startTimers(ctx);
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
+		if (ctx.mode !== "tui" || !enabled) return;
 		await refreshGit(ctx);
 		void refreshSummary(ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		lifecycleGeneration++;
+		summaryAbortController?.abort();
+		summaryAbortController = undefined;
 		stopTimers();
 		ctx.ui.setFooter(undefined);
 	});
@@ -661,12 +725,19 @@ export default function (pi: ExtensionAPI) {
 		description: "Toggle the sticky git/session summary bar",
 		handler: async (_args, ctx) => {
 			enabled = !enabled;
+			lifecycleGeneration++;
 			if (enabled) {
-				installFooter(ctx);
-				await refreshGit(ctx);
-				void refreshSummary(ctx);
+				if (ctx.mode === "tui") {
+					installFooter(ctx);
+					await refreshGit(ctx);
+					void refreshSummary(ctx);
+					startTimers(ctx);
+				}
 				ctx.ui.notify("Session bar enabled", "info");
 			} else {
+				summaryAbortController?.abort();
+				summaryAbortController = undefined;
+				stopTimers();
 				ctx.ui.setFooter(undefined);
 				ctx.ui.notify("Session bar disabled", "info");
 			}
